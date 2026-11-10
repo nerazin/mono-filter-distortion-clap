@@ -1,0 +1,6 @@
+/build/
+/tests/MonoFilterDist.clap
+/tests/clap_render
+/tests/clap_contract
+*.o
+.DS_Store
