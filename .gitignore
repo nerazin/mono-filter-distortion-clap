@@ -4,3 +4,4 @@
 /tests/clap_contract
 *.o
 .DS_Store
+/tests/test_core

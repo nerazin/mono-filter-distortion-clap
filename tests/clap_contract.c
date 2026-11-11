@@ -31,8 +31,8 @@ static Loaded load(const char *path){
 }
 static void close_plugin(Loaded *v){v->plugin->destroy(v->plugin);v->entry->deinit();dlclose(v->library);}
 int main(int argc,char **argv){
-   CHECK(argc==3,"usage: clap_contract v010.clap v020.clap");Loaded old=load(argv[1]), now=load(argv[2]);
-   CHECK(!strcmp(old.plugin->desc->id,now.plugin->desc->id),"plugin ID compatibility");CHECK(!strcmp(now.plugin->desc->version,"0.2.0"),"version");
+   CHECK(argc==3,"usage: clap_contract older.clap current.clap");Loaded old=load(argv[1]), now=load(argv[2]);
+   CHECK(!strcmp(old.plugin->desc->id,now.plugin->desc->id),"plugin ID compatibility");CHECK(!strcmp(now.plugin->desc->version,"0.3.0"),"version");
    const clap_plugin_params_t *params=now.plugin->get_extension(now.plugin,CLAP_EXT_PARAMS);CHECK(params && params->count(now.plugin)==8,"8 parameters");
    for(unsigned k=0;k<8;k++){clap_param_info_t info;CHECK(params->get_info(now.plugin,k,&info),"param info");CHECK(info.id==k && (info.flags&CLAP_PARAM_IS_AUTOMATABLE) && (info.flags&CLAP_PARAM_IS_MODULATABLE),"parameter identity and automation");}
    const double values[8]={80.25,16.5,0,127,-19,12,-12,64};set_all(old.plugin,values);
@@ -46,14 +46,14 @@ int main(int argc,char **argv){
    const clap_plugin_remote_controls_t *remote=now.plugin->get_extension(now.plugin,CLAP_EXT_REMOTE_CONTROLS);clap_remote_controls_page_t page;
    CHECK(remote && remote->get(now.plugin,0,&page),"remote page");for(unsigned k=0;k<8;k++)CHECK(page.param_ids[k]==k,"remote ids");
    const double dry[8]={40,127,0,0,0,0,0,0};set_all(now.plugin,dry);
-   CHECK(now.plugin->activate(now.plugin,44100,1,256),"activate");CHECK(latency->get(now.plugin)==8 && latency_changed_count==1,"reported 8-sample latency");CHECK(now.plugin->start_processing(now.plugin),"start");
+   CHECK(now.plugin->activate(now.plugin,44100,1,256),"activate");CHECK(latency->get(now.plugin)==22 && latency_changed_count==1,"reported 22-sample latency");CHECK(now.plugin->start_processing(now.plugin),"start");
    float l[256]={0},r[256]={0},ol[256]={0},orr[256]={0};l[0]=0.25f;r[0]=-0.25f;
    float *ins[2]={l,r},*outs[2]={ol,orr};clap_audio_buffer_t ai={.data32=ins,.channel_count=2},ao={.data32=outs,.channel_count=2};
    clap_process_t proc={.steady_time=-1,.frames_count=256,.audio_inputs=&ai,.audio_outputs=&ao,.audio_inputs_count=1,.audio_outputs_count=1};
    CHECK(now.plugin->process(now.plugin,&proc)==CLAP_PROCESS_CONTINUE,"process");
-   for(int i=0;i<8;i++)CHECK(ol[i]==0 && orr[i]==0,"leading latency silence");
-   CHECK(fabs(ol[8]-.25)<1e-6 && fabs(orr[8]+.25)<1e-6,"dry impulse alignment");
+   for(int i=0;i<22;i++)CHECK(ol[i]==0 && orr[i]==0,"leading latency silence");
+   CHECK(fabs(ol[22]-.25)<1e-6 && fabs(orr[22]+.25)<1e-6,"dry impulse alignment");
    now.plugin->stop_processing(now.plugin);now.plugin->deactivate(now.plugin);
-   CHECK(now.plugin->activate(now.plugin,48000,1,256),"activate 48k");CHECK(latency->get(now.plugin)==99 && latency_changed_count==2,"updated 48k latency");
-   now.plugin->deactivate(now.plugin);close_plugin(&now);close_plugin(&old);puts("PASS CLAP IDs, 0.1.0 state, automation, ports and latency");
+   CHECK(now.plugin->activate(now.plugin,48000,1,256),"activate 48k");CHECK(latency->get(now.plugin)==114 && latency_changed_count==2,"updated 48k latency");
+   now.plugin->deactivate(now.plugin);close_plugin(&now);close_plugin(&old);puts("PASS CLAP IDs, older state, automation, ports and latency");
 }
