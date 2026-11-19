@@ -1,8 +1,9 @@
-# Mono Filter Distortion 0.3.0
+# Mono Filter Distortion 0.4.0
 
-The Elektron Monomachine's track filter and distortion as a stereo CLAP effect
-for Bitwig: BASE, WIDTH, HP Q, LP Q and DIST, working directly on incoming
-audio with no MIDI, key tracking or filter envelope.
+The Elektron Monomachine's track EQ, filter and distortion as a stereo CLAP
+effect for Bitwig: EQF and EQG, then BASE, WIDTH, HP Q, LP Q and DIST, in the
+hardware's order, working directly on incoming audio with no MIDI, key
+tracking or filter envelope.
 
 Since 0.3.0 the DSP is no longer a curve-fitted approximation. It is a native
 fixed-point port of the signal path in Monomachine OS 1.32B, written from the
@@ -41,10 +42,12 @@ requires no firmware, emulator, JUCE or further network downloads.
    copies in the scanned plug-in directories.
 5. Open Bitwig and rescan plug-ins under **Settings → Locations** if needed.
 
-Version 0.3.0 keeps the plug-in ID, parameter IDs and saved-state format of
-0.1.0 and 0.2.0, so projects restore their parameter values. Its sound and
-reported latency have changed: keep a backup of important projects before
-replacing an older version. This is a separate effect from Mono Chorus.
+Version 0.4.0 keeps the plug-in ID and the parameter IDs of 0.1.0–0.3.0 and
+adds EQF and EQG. It opens projects saved by any older version, with the EQ at
+its defaults, which is how 0.3.0 sounded; the latency is unchanged. A project
+saved by 0.4.0 does not open in an older version, so keep a backup of
+important projects before replacing one. 0.3.0 changed the sound and latency
+of 0.1.0 and 0.2.0. This is a separate effect from Mono Chorus.
 
 `build_macos.sh` was run on an Apple Silicon Mac and the resulting universal
 bundle was loaded and rendered by the offline test host. It has **not** been
@@ -70,14 +73,16 @@ press Return. It prints loader and signature details without sending data.
 | HP Q | 0–127; high-pass resonance. |
 | LP Q | 0–127; low-pass resonance. |
 | DIST | −64 to +63, as on the Monomachine's display; 0 is the centre. Negative values only turn the level into the filter down (1.35 dB per step). Positive values raise the gain into the clipper that follows the filters. |
-| Input | −24 to +24 dB before the filter and distortion. Not a Monomachine control. |
+| EQF | 0–127; the EQ's centre frequency: 31.6 Hz at 0, 810 Hz at 64, 19.8 kHz at 127, about 14 steps per octave. It moves smoothly between steps. |
+| EQG | −64 to +63, as on the display; the EQ's gain at EQF. −1 is flat. Below that each step cuts 0.47 dB more, to −29.6 dB at −64; from 0 up the boost runs from +0.9 dB to +36 dB at +63. Whole steps only: a value in between acts as the step below it. |
+| Input | −24 to +24 dB before the EQ, filter and distortion. Not a Monomachine control. |
 | Output | −24 to +24 dB after the wet/dry mix. Not a Monomachine control. |
 | Mix | 0–100%; dry to filtered/distorted. Not a Monomachine control. |
 
 All controls support CLAP automation and modulation. The two channels are
 processed independently with the same settings.
 
-The five Monomachine controls behave as its knobs do. A whole number is a knob
+The seven Monomachine controls behave as its knobs do. A whole number is a knob
 position; values in between are accepted and land between positions, as an LFO
 does on the hardware. A change to a control's value is slewed the way the
 Monomachine's main CPU slews a knob: every 384 samples the control moves a
@@ -91,11 +96,21 @@ driven. At DIST 0 with a quiet signal the plug-in is at unity gain; a
 full-scale sine comes out clipped at about −4.7 dBFS.
 
 BASE 0 and WIDTH 127 are the most open settings, but nothing is bypassed
-there: the filters, the clipper and the track EQ that sits in front of them on
-the hardware are always in the path. The EQ is held at the Monomachine's
-defaults, which are not quite flat (a lift of up to 0.8 dB centred on
-800 Hz), and the top octave rolls off (−2.6 dB at 15 kHz, −9 dB at 20 kHz).
-Use Mix 0% for the dry signal. At host rates other than 44.1 kHz even the dry
+there: the EQ, the filters and the clipper are always in the path, and the top
+octave rolls off (−2.6 dB at 15 kHz, −9 dB at 20 kHz). The EQ's defaults
+(EQF 64, EQG 0) are not quite flat but +0.9 dB at 810 Hz; EQG −1 is flat.
+Use Mix 0% for the dry signal.
+
+The EQ is a single bell with a fixed width (Q about 2) and sits in front of
+the filters, as on the hardware. So EQG also changes the distortion and the
+resonance: a boost drives that band harder into the clipper, a cut takes it
+out. Away from EQF the level does not change with EQG.
+
+One knob quirk follows from the slew described above: a word moving up stops
+one LSB short of its target, and EQG uses whole steps, so after you turn EQG
+*up* it acts as the step below the one shown. Turned down, or set by loading a
+project, it lands on the step shown. This is what Monomodule's model of the
+main CPU does. It was not checked on a real unit. At host rates other than 44.1 kHz even the dry
 path is band-limited by sample-rate conversion.
 
 For a resonant, distorted band on a snare, try:
@@ -121,15 +136,16 @@ path's Nyquist are not preserved.
 
 The reference is Monomachine OS 1.32B's DSP code running in
 [Monomodule](https://github.com/shnolk/monomodule)'s emulated DSP56300, on a
-THRU track with key tracking off, the filter envelope at rest and the EFX page
-at its defaults. All figures are at 44.1 kHz.
+THRU track with key tracking off, the filter envelope at rest and the rest of
+the EFX page at its defaults. All figures are at 44.1 kHz.
 
 | Check | Result |
 | --- | --- |
-| Filter-section output, 60 random cases: noise, sines and impulses from full scale to −40 dB, all five controls jumping every few blocks | 384,000 of 384,000 frames identical |
-| The six coefficient tables generated by the plug-in against the firmware's | 9,070 of 9,070 entries identical |
-| The built plug-in against the firmware driven by Monomodule's own host model, knobs moving at random times (so the knob slew is included) | 383,744 of 383,744 samples identical |
-| The 77 impulse captures used to judge 0.1.0 and 0.2.0, at the filter section | identical in all 77 |
+| Filter-section output, 200 random cases: noise, sines and impulses from full scale to −40 dB, all seven controls jumping every few blocks (whole steps and words in between) | 6,400,000 of 6,400,000 frames identical |
+| The EQ's coefficients in every block of those cases | 400,000 of 400,000 blocks identical |
+| The ten coefficient tables generated by the plug-in against the firmware's | 10,653 of 10,653 entries identical |
+| The built plug-in against the firmware driven by Monomodule's own host model, 160 cases with all seven knobs moving at random times (so the knob slew is included) | 7,674,880 of 7,674,880 samples identical |
+| The 77 impulse captures used to judge 0.1.0 and 0.2.0, at the filter section (0.3.0; the EQ at its defaults computes the same coefficients in 0.4.0) | identical in all 77 |
 | The same 77 at the track's final output, after the hardware's VOL, pan and LEVEL | within 3 LSB of 24 bits |
 
 For comparison, 0.2.0 on those 77 captures averaged 0.87 dB of magnitude error
@@ -146,8 +162,8 @@ What this does and does not establish:
   and turned the right way up (the hardware's clipper inverts). On the
   hardware the rest of the track follows; with SRR and the delay send off that
   is a plain gain and two samples of delay.
-- The EQ, key tracking, filter envelope, SRR and delay of a Monomachine track
-  are not controls here: the EQ is fixed at its defaults, the others are off.
+- Key tracking, the filter envelope, SRR and the delay of a Monomachine track
+  are not here; they are off.
 - Modulation follows the timing and range of the hardware's LFOs but was not
   checked against them.
 - At host rates other than 44.1 kHz the resampling around the core is this

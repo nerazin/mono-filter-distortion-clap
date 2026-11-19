@@ -5,8 +5,8 @@ static void *filter_engine_create(double sample_rate);
 static void filter_engine_destroy(void *engine);
 static void filter_engine_reset(void *engine);
 static uint32_t filter_engine_latency(const void *engine);
-static void filter_engine_process(void *engine, const double input[2], const double controls[8],
-                                  const double modulation[8], double output[2]);
+static void filter_engine_process(void *engine, const double input[2], const double *controls,
+                                  const double *modulation, double output[2]);
 #include <math.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -20,13 +20,15 @@ static void filter_engine_process(void *engine, const double input[2], const dou
  * No firmware or emulator is distributed or needed.
  * SPDX-License-Identifier: GPL-3.0-only */
 
-#define NPARAM 8
+#define NPARAM 10
+#define NPARAM_V1 8          /* parameters in a 0.1.0-0.3.0 saved state */
 
-enum { BASE, WDTH, HPQ, LPQ, DIST, INPUT, OUTPUT, MIX };
-static const char *const names[NPARAM] = {"BASE", "WIDTH", "HP Q", "LP Q", "DIST", "Input", "Output", "Mix"};
-static const double defaults[NPARAM] = {0, 127, 0, 0, 0, 0, 0, 100};
-static const double minimums[NPARAM] = {0, 0, 0, 0, -64, -24, -24, 0};
-static const double maximums[NPARAM] = {127, 127, 127, 127, 63, 24, 24, 100};
+/* IDs 0-7 are those of 0.1.0-0.3.0; EQF and EQG were added in 0.4.0 */
+enum { BASE, WDTH, HPQ, LPQ, DIST, INPUT, OUTPUT, MIX, EQF, EQG };
+static const char *const names[NPARAM] = {"BASE", "WIDTH", "HP Q", "LP Q", "DIST", "Input", "Output", "Mix", "EQF", "EQG"};
+static const double defaults[NPARAM] = {0, 127, 0, 0, 0, 0, 0, 100, 64, 0};
+static const double minimums[NPARAM] = {0, 0, 0, 0, -64, -24, -24, 0, 0, -64};
+static const double maximums[NPARAM] = {127, 127, 127, 127, 63, 24, 24, 100, 127, 63};
 
 static const char *const features[] = {
    CLAP_PLUGIN_FEATURE_AUDIO_EFFECT, CLAP_PLUGIN_FEATURE_FILTER, CLAP_PLUGIN_FEATURE_DISTORTION,
@@ -38,8 +40,8 @@ static const clap_plugin_descriptor_t descriptor = {
    .name = "Mono Filter Distortion",
    .vendor = "Independent DSP",
    .url = "", .manual_url = "", .support_url = "",
-   .version = "0.3.0",
-   .description = "The Monomachine track filter and distortion, ported from its DSP code",
+   .version = "0.4.0",
+   .description = "The Monomachine track EQ, filter and distortion, ported from its DSP code",
    .features = features
 };
 
@@ -215,7 +217,7 @@ static bool params_to_text(const clap_plugin_t *p, clap_id id, double v, char *o
    if (id >= NPARAM || !out || !cap || !isfinite(v)) return false;
    if (id == INPUT || id == OUTPUT) snprintf(out, cap, "%+.1f dB", v);
    else if (id == MIX) snprintf(out, cap, "%.1f %%", v);
-   else if (id == DIST) snprintf(out, cap, "%+.1f", v);
+   else if (id == DIST || id == EQG) snprintf(out, cap, "%+.1f", v);
    else snprintf(out, cap, "%.1f", v);
    return true;
 }
@@ -258,7 +260,7 @@ static bool stream_read(const clap_istream_t *s, void *buf, uint64_t n) {
 static bool state_save(const clap_plugin_t *p, const clap_ostream_t *out) {
    if (!out || !out->write) return false;
    FilterPlugin *s = p->plugin_data;
-   const char magic[8] = {'M', 'F', 'I', 'L', 'T', 0, 0, 1};
+   const char magic[8] = {'M', 'F', 'I', 'L', 'T', 0, 0, 2};
    if (!stream_write(out, magic, sizeof magic)) return false;
    for (unsigned i = 0; i < NPARAM; ++i) {
       uint64_t u = double_bits(base_value(s, i));
@@ -273,9 +275,11 @@ static bool state_load(const clap_plugin_t *p, const clap_istream_t *in) {
    FilterPlugin *s = p->plugin_data;
    char magic[8];
    double v[NPARAM];
-   const char expected[8] = {'M', 'F', 'I', 'L', 'T', 0, 0, 1};
-   if (!stream_read(in, magic, 8) || memcmp(magic, expected, 8)) return false;
-   for (unsigned i = 0; i < NPARAM; ++i) {
+   memcpy(v, defaults, sizeof v);
+   const char expected[7] = {'M', 'F', 'I', 'L', 'T', 0, 0};
+   if (!stream_read(in, magic, 8) || memcmp(magic, expected, 7) || magic[7] < 1 || magic[7] > 2) return false;
+   const unsigned count = magic[7] == 1 ? NPARAM_V1 : NPARAM;
+   for (unsigned i = 0; i < count; ++i) {
       uint8_t bytes[8];
       uint64_t u = 0;
       if (!stream_read(in, bytes, 8)) return false;
@@ -294,16 +298,17 @@ static const clap_plugin_state_t state = {state_save, state_load};
 
 static uint32_t remote_count(const clap_plugin_t *p) {
    (void)p;
-   return 1;
+   return 2;
 }
 static bool remote_get(const clap_plugin_t *p, uint32_t i, clap_remote_controls_page_t *page) {
    (void)p;
-   if (i || !page) return false;
+   if (i > 1 || !page) return false;
    memset(page, 0, sizeof *page);
-   page->page_id = 0;
+   page->page_id = i;
    snprintf(page->section_name, sizeof page->section_name, "Filter & Drive");
-   snprintf(page->page_name, sizeof page->page_name, "Main");
-   for (unsigned k = 0; k < NPARAM; ++k) page->param_ids[k] = k;
+   snprintf(page->page_name, sizeof page->page_name, "%s", i ? "EQ" : "Main");
+   for (unsigned k = 0; k < CLAP_REMOTE_CONTROLS_COUNT; ++k) page->param_ids[k] = i ? CLAP_INVALID_ID : k;
+   if (i) { page->param_ids[0] = EQF; page->param_ids[1] = EQG; }
    return true;
 }
 static const clap_plugin_remote_controls_t remote = {remote_count, remote_get};
@@ -481,16 +486,18 @@ typedef struct {
    struct { double left, right; } queue[ENGINE_QUEUE];
 } FilterEngine;
 
-/* Start of a control frame (three blocks). BASE, WIDTH, HP Q, LP Q and DIST
- * are the core's five controls, in that order. */
+/* Start of a control frame (three blocks): the core's controls, BASE, WIDTH,
+ * HP Q, LP Q, DIST, EQF and EQG, from their parameters. */
 static void control_frame(FilterEngine *e, const AudioFrame *f) {
+   static const int param[MC_CONTROLS] = {BASE, WDTH, HPQ, LPQ, DIST, EQF, EQG};
    const uint32_t frame = e->blocks / 3;
    for (int i = 0; i < MC_CONTROLS; ++i) {
-      const double value = f->ctl[i] + (i == DIST ? 64.0 : 0.0);
+      const int id = param[i];
+      const double value = f->ctl[id] + (id == DIST || id == EQG ? 64.0 : 0.0);
       const int32_t target = (int32_t)lrint(clamp(value, 0.0, 127.0) * 65536.0);
       if (!e->settled) e->knob[i] = target;
       else if ((frame & 7) == 1) e->knob[i] = (3 * e->knob[i] + target) >> 2;
-      const double mod = clamp(f->mod[i], -127.0, 127.0) * 65536.0;
+      const double mod = clamp(f->mod[id], -127.0, 127.0) * 65536.0;
       e->word[i] = mod == 0.0 ? e->knob[i] : (int32_t)lrint(clamp(e->knob[i] + mod, 0.0, (double)0x7effff));
    }
 }
@@ -577,8 +584,8 @@ static uint32_t filter_engine_latency(const void *engine) {
    const FilterEngine *e = engine;
    return e ? e->latency : 0;
 }
-static void filter_engine_process(void *engine, const double input[2], const double controls[8],
-                                  const double modulation[8], double out[2]) {
+static void filter_engine_process(void *engine, const double input[2], const double *controls,
+                                  const double *modulation, double out[2]) {
    FilterEngine *e = engine;
    AudioFrame f = {0};
    f.x = isfinite(input[0]) ? input[0] : 0;

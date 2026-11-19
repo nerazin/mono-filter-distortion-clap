@@ -16,10 +16,11 @@ int main(void) {
    MonoCore m;
    mono_core_reset(&m);
    mix(mc_cos, MC_FREQS); mix(mc_sin, MC_FREQS); mix(mc_pole, MC_FREQS);
-   mix(mc_rad_table, MC_RAD_LOW + 1601); mix(mc_drive, 256); mix(mc_comp, 256); mix(mc_eq, 4);
+   mix(mc_rad_table, MC_RAD_LOW + 1601); mix(mc_drive, 256); mix(mc_comp, 256);
+   mix(mc_eq_width, MC_EQ_FREQS); mix(mc_eq_cut, 128); mix(mc_eq_dry, 128); mix(mc_eq_ap, 128);
    const uint64_t tables = hash;
    uint32_t seed = 1;
-   int32_t ctl[MC_CONTROLS] = {0, 127 << 16, 0, 0, 64 << 16};
+   int32_t ctl[MC_CONTROLS] = {0, 127 << 16, 0, 0, 64 << 16, 64 << 16, 64 << 16};
    for (int block = 0; block < 4000; ++block) {
       int32_t l[MC_FRAMES], r[MC_FRAMES];
       if (block % 7 == 6) {                               /* move one control */
@@ -34,7 +35,7 @@ int main(void) {
       mono_core_block(&m, ctl, l, r);
       mix(l, MC_FRAMES); mix(r, MC_FRAMES);
    }
-   const uint64_t want_tables = 0x7c16be6b8271c1f7ULL, want_audio = 0x3ee94d3e5ec6fa28ULL;
+   const uint64_t want_tables = 0x6cb9437eaa4f9343ULL, want_audio = 0xc4fa4862dc063c05ULL;
    printf("tables %016llx audio %016llx\n", (unsigned long long)tables, (unsigned long long)hash);
    if (tables != want_tables || hash != want_audio) { puts("FAIL: output differs from the firmware-verified build"); return 1; }
    puts("PASS core tables and audio match the firmware-verified build");

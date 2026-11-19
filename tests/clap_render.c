@@ -1,5 +1,5 @@
 /* Minimal offline CLAP host used for regression and firmware comparisons.
- * Input: headerless frames of 10 doubles: stereo input then 8 raw controls.
+ * Input: headerless frames of 12 doubles: stereo input then the 10 parameters in ID order.
  * Output: headerless interleaved stereo doubles, including declared latency.
  */
 #include <clap/clap.h>
@@ -11,9 +11,10 @@
 
 #define REQUIRE(c, m) do { if (!(c)) { fprintf(stderr, "%s (line %d)\n", m, __LINE__); exit(1); } } while (0)
 #define MAX_CHUNK 2048
-#define MAX_EVENTS (8 * MAX_CHUNK)
+#define NCONTROL 10
+#define MAX_EVENTS (NCONTROL * MAX_CHUNK)
 
-typedef struct { double input[2], control[8]; } Frame;
+typedef struct { double input[2], control[NCONTROL]; } Frame;
 typedef struct { clap_input_events_t api; clap_event_param_value_t values[MAX_EVENTS]; const clap_event_header_t *items[MAX_EVENTS]; uint32_t count; } Events;
 static uint32_t event_size(const clap_input_events_t *ev) { return ((Events *)ev->ctx)->count; }
 static const clap_event_header_t *event_get(const clap_input_events_t *ev, uint32_t i) { return ((Events *)ev->ctx)->items[i]; }
@@ -54,7 +55,7 @@ int main(int argc, char **argv) {
    const clap_plugin_latency_t *latency = plug->get_extension(plug, CLAP_EXT_LATENCY); REQUIRE(latency, "latency extension");
    Events *ev = calloc(1, sizeof *ev); REQUIRE(ev, "allocate events");
    ev->api.ctx=ev; ev->api.size=event_size; ev->api.get=event_get;
-   for (unsigned k=0;k<8;k++) event_add(ev,k,input[0].control[k],0);
+   for (unsigned k=0;k<NCONTROL;k++) event_add(ev,k,input[0].control[k],0);
    params->flush(plug,&ev->api,NULL); ev->count=0;
    REQUIRE(plug->activate(plug,rate,1,chunk) && plug->start_processing(plug), "activate");
    const uint32_t delay=latency->get(plug);
@@ -65,7 +66,7 @@ int main(int argc, char **argv) {
    float *in_float[2]={lf,rf}, *out_float[2]={olf,orrf};
    clap_audio_buffer_t ai={.data64=in_channels,.channel_count=2}, ao={.data64=out_channels,.channel_count=2};
    if(bits==32){ai.data64=NULL;ao.data64=NULL;ai.data32=in_float;ao.data32=out_float;}
-   double previous[8]; for(int k=0;k<8;k++) previous[k]=input[0].control[k];
+   double previous[NCONTROL]; for(int k=0;k<NCONTROL;k++) previous[k]=input[0].control[k];
    const size_t total=frames+(extra ? delay+extra : 0);
    for(size_t pos=0;pos<total;) {
       uint32_t n=(uint32_t)((total-pos)<chunk ? (total-pos) : chunk);ev->count=0;
@@ -73,7 +74,7 @@ int main(int argc, char **argv) {
          const size_t index=pos+i; l[i]=r[i]=0;
          if(index<frames) {
             l[i]=input[index].input[0];r[i]=input[index].input[1];
-            for(unsigned k=0;k<8;k++) if(input[index].control[k]!=previous[k]) {
+            for(unsigned k=0;k<NCONTROL;k++) if(input[index].control[k]!=previous[k]) {
                event_add(ev,k,input[index].control[k],i);previous[k]=input[index].control[k];
             }
          }

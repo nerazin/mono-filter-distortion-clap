@@ -10,7 +10,9 @@
  * The arithmetic follows the DSP: 24-bit words, 56-bit accumulators,
  * truncation and saturation exactly where the original has them. Blocks are
  * 16 stereo frames at 44.1 kHz; controls are the 24-bit block words the
- * Monomachine's main CPU sends (knob value << 16).
+ * Monomachine's main CPU sends (knob value << 16). The controls are the
+ * filter page's BASE, WIDTH, HP Q and LP Q, the AMP page's DIST and the EFX
+ * page's EQF and EQG.
  *
  * Plain C99, no dependencies beyond libm. SPDX-License-Identifier: GPL-3.0-only */
 #ifndef MONO_CORE_H
@@ -74,7 +76,9 @@ static int32_t mc_div(mc_acc a, int32_t s) {
 static int32_t mc_cos[MC_FREQS], mc_sin[MC_FREQS], mc_pole[MC_FREQS];
 static int32_t mc_rad_table[MC_RAD_LOW + 1601];
 static int32_t mc_drive[256], mc_comp[256];
-static int32_t mc_eq[4];
+#define MC_EQ_FREQS 1199    /* EQF positions: (word * 0x4af) >> 23 */
+static int32_t mc_eq_width[MC_EQ_FREQS];                     /* EQ bandwidth term per EQF position */
+static int32_t mc_eq_cut[128], mc_eq_dry[128], mc_eq_ap[128];  /* per EQG step */
 static int mc_tables_ready;
 
 static int32_t mc_fix(double v) { const double r = rint(v * 8388608.0); return r > MC_ONE ? MC_ONE : (int32_t)r; }
@@ -109,18 +113,22 @@ static void mc_tables(void) {
    static const signed char fix[][2] = {{2,-1},{4,1},{6,-1},{8,-1},{11,1},{12,1},{19,1},{20,1},{21,1},{29,-1},{56,1}};
    for (unsigned i = 0; i < sizeof fix / sizeof fix[0]; ++i) mc_comp[fix[i][0]] += fix[i][1];
 
-   /* The track EQ sits in front of the filter and cannot be switched off. It
-    * is held at the EFX page defaults (EQF 64, EQG 64 = "0" on the display):
-    * a second-order all-pass at 1.62 kHz mixed with the input, which also
-    * sets the internal headroom (-30.6 dB). 0x03c5e3 is the EQF width term,
-    * 0x00fdf8 / -0x000d63 the two EQG mix gains at those positions. */
-   const int32_t width = 0x03c5e3, cosine = mc_cos[1126];
-   const int32_t q = mc_div(mc_w(0x010000), mc_sat((mc_w(width) + mc_w(MC_ONE)) >> 1));
-   const int32_t k = mc_sat(mc_shl(mc_mpy(q, mc_sat(mc_w(MC_ONE) - mc_w(width))), 6));
-   mc_eq[0] = mc_sat((-mc_mpy(cosine, k) - mc_w(cosine)) >> 1);
-   mc_eq[1] = k;
-   mc_eq[2] = 0x00fdf8;
-   mc_eq[3] = -0x000d63;
+   /* The track EQ sits in front of the filter and cannot be switched off: a
+    * second-order all-pass mixed with its input (a boost/cut bell). Its centre
+    * comes from mc_cos at EQF position + 527, a table made for 88.2 kHz used
+    * at 44.1 kHz, so 31.6 Hz to 19.8 kHz; its width term is tan(c * w), a
+    * constant Q of about 1.96 (c fitted: every entry exact). EQG 63 is flat;
+    * each step away is 5/64 octave of gain, 2^(-5n/64) below and
+    * 2 * 2^(5n/64) - 1 above. Away from the band the output is a fixed
+    * 61589.173 / 2^23 * 4 (-30.6 dB): the track's headroom before the filter. */
+   for (int i = 0; i < MC_EQ_FREQS; ++i) mc_eq_width[i] = mc_fix(tan(0.25538075778 * mc_omega(i + 527)));
+   for (int n = 0; n < 128; ++n) {
+      const double cut = pow(2.0, -5.0 * (63 - n) / 64.0);
+      const double h = n < 63 ? cut - 1.0 : 2.0 * (pow(2.0, 5.0 * (n - 63) / 64.0) - 1.0);
+      mc_eq_cut[n] = n < 63 ? mc_fix(cut) : MC_ONE;
+      mc_eq_dry[n] = (int32_t)rint(61589.173 * (1.0 + h / 2.0));
+      mc_eq_ap[n] = (int32_t)rint(-61589.173 * h / 2.0);
+   }
    mc_tables_ready = 1;
 }
 
@@ -227,6 +235,7 @@ static void mc_resonator(McResonator *s, int32_t target, int32_t q_word, int32_t
 /* ---- one channel, one block --------------------------------------------- */
 
 typedef struct {
+   int32_t eq[4];                     /* EQ: all-pass terms, then the dry and all-pass gains */
    McRamp lp, hp;
    int32_t clip_gain;                 /* gain into the clipper */
    int32_t smooth_f[16], smooth_g[16];
@@ -234,17 +243,17 @@ typedef struct {
 } McBlock;
 
 static void mc_channel(McChannel *s, const McBlock *k, int32_t *io) {
-   /* EQ: all-pass mixed with the input (see mc_tables) */
+   /* EQ: all-pass mixed with the input (see mc_tables and mc_eq) */
    int32_t x[18], ap[18], e[19];
    x[0] = s->eq_in[0]; x[1] = s->eq_in[1];
    ap[0] = s->eq_ap[0]; ap[1] = s->eq_ap[1];
    memcpy(x + 2, io, 16 * sizeof *io);
    memcpy(e, s->up, sizeof s->up);
    for (int i = 0; i < 16; ++i) {
-      const mc_acc a = mc_w(x[i]) + 2 * mc_mpy(mc_eq[0], x[i + 1]) + mc_mpy(mc_eq[1], x[i + 2])
-                     - mc_mpy(ap[i], mc_eq[1]) - 2 * mc_mpy(mc_eq[0], ap[i + 1]);
+      const mc_acc a = mc_w(x[i]) + 2 * mc_mpy(k->eq[0], x[i + 1]) + mc_mpy(k->eq[1], x[i + 2])
+                     - mc_mpy(ap[i], k->eq[1]) - 2 * mc_mpy(k->eq[0], ap[i + 1]);
       ap[i + 2] = mc_sat(mc_s56(a));
-      e[3 + i] = mc_sat(mc_shl(mc_mpy(x[i + 2], mc_eq[2]) + mc_mpy(mc_eq[3], ap[i + 2]), 2));
+      e[3 + i] = mc_sat(mc_shl(mc_mpy(x[i + 2], k->eq[2]) + mc_mpy(k->eq[3], ap[i + 2]), 2));
    }
    s->eq_in[0] = x[16]; s->eq_in[1] = x[17];
    s->eq_ap[0] = ap[16]; s->eq_ap[1] = ap[17];
@@ -323,14 +332,28 @@ static void mc_channel(McChannel *s, const McBlock *k, int32_t *io) {
 
 /* ---- public entry ------------------------------------------------------- */
 
-enum { MC_BASE, MC_WIDTH, MC_HPQ, MC_LPQ, MC_DIST, MC_CONTROLS };
+enum { MC_BASE, MC_WIDTH, MC_HPQ, MC_LPQ, MC_DIST, MC_EQF, MC_EQG, MC_CONTROLS };
 
-/* Process one block of 16 frames in place. ctl[] holds the five block words
- * (0 .. 0x7fffff; a knob at v sends v << 16, DIST centre is 64 << 16). Audio
+/* EQ coefficients for one block, from EQF (its exact word) and EQG (whole
+ * steps); they change at the block edge, without a ramp. */
+static void mc_eq(int32_t eqf, int32_t eqg, int32_t eq[4]) {
+   const int32_t f = mc_hi(mc_mpy(eqf, 0x4af)), g = mc_hi(mc_mpy(eqg, 0x80));
+   const int32_t w = mc_eq_width[f], cut = mc_eq_cut[g], cosine = mc_cos[f + 527];
+   const int32_t q = (int32_t)((uint32_t)mc_div(mc_w(0x010000), mc_sat((mc_w(w) + mc_w(cut)) >> 1)) << 8) >> 8;
+   const int32_t k = mc_sat(mc_shl(mc_mpy(q, mc_sat(mc_w(cut) - mc_w(w))), 6));
+   eq[0] = mc_sat((-mc_mpy(cosine, k) - mc_w(cosine)) >> 1);
+   eq[1] = k;
+   eq[2] = mc_eq_dry[g];
+   eq[3] = mc_eq_ap[g];
+}
+
+/* Process one block of 16 frames in place. ctl[] holds the seven block words
+ * (0 .. 0x7fffff; a knob at v sends v << 16, DIST and EQG centre is 64 << 16). Audio
  * is 24-bit signed. The output is the track signal after the filter section,
  * inverted, about 7 dB below the input at DIST centre. */
 static void mono_core_block(MonoCore *m, const int32_t ctl[MC_CONTROLS], int32_t left[MC_FRAMES], int32_t right[MC_FRAMES]) {
    McBlock k;
+   mc_eq(ctl[MC_EQF], ctl[MC_EQG], k.eq);
    /* BASE places the high-pass, BASE + WIDTH the low-pass, 16 steps per unit */
    mc_acc a = mc_rnd(mc_mpy(0x800, ctl[MC_BASE]) - mc_w(0x80));
    if (a >= mc_w(0x700)) a = mc_w(0x700);

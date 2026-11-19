@@ -6,12 +6,12 @@
 #include <string.h>
 
 #define CHECK(c,m) do { if(!(c)){fprintf(stderr,"FAIL %s, line %d\n",m,__LINE__);exit(1);} }while(0)
-typedef struct { clap_input_events_t api; clap_event_param_value_t values[8]; const clap_event_header_t *items[8]; unsigned n; } Events;
+typedef struct { clap_input_events_t api; clap_event_param_value_t values[10]; const clap_event_header_t *items[10]; unsigned n; } Events;
 static uint32_t n_events(const clap_input_events_t *p){return ((Events*)p->ctx)->n;}
 static const clap_event_header_t *get_event(const clap_input_events_t *p,uint32_t i){return ((Events*)p->ctx)->items[i];}
-static void set_all(const clap_plugin_t *p,const double values[8]){
-   Events e={0};e.api.ctx=&e;e.api.size=n_events;e.api.get=get_event;e.n=8;
-   for(unsigned k=0;k<8;k++){clap_event_param_value_t *v=&e.values[k];v->header.size=sizeof *v;v->header.space_id=CLAP_CORE_EVENT_SPACE_ID;v->header.type=CLAP_EVENT_PARAM_VALUE;v->param_id=k;v->note_id=v->port_index=v->channel=v->key=-1;v->value=values[k];e.items[k]=&v->header;}
+static void set_all(const clap_plugin_t *p,const double *values,unsigned n){
+   Events e={0};e.api.ctx=&e;e.api.size=n_events;e.api.get=get_event;e.n=n;
+   for(unsigned k=0;k<n;k++){clap_event_param_value_t *v=&e.values[k];v->header.size=sizeof *v;v->header.space_id=CLAP_CORE_EVENT_SPACE_ID;v->header.type=CLAP_EVENT_PARAM_VALUE;v->param_id=k;v->note_id=v->port_index=v->channel=v->key=-1;v->value=values[k];e.items[k]=&v->header;}
    ((const clap_plugin_params_t*)p->get_extension(p,CLAP_EXT_PARAMS))->flush(p,&e.api,NULL);
 }
 typedef struct{unsigned char data[512];size_t pos,size;} Stream;
@@ -32,20 +32,26 @@ static Loaded load(const char *path){
 static void close_plugin(Loaded *v){v->plugin->destroy(v->plugin);v->entry->deinit();dlclose(v->library);}
 int main(int argc,char **argv){
    CHECK(argc==3,"usage: clap_contract older.clap current.clap");Loaded old=load(argv[1]), now=load(argv[2]);
-   CHECK(!strcmp(old.plugin->desc->id,now.plugin->desc->id),"plugin ID compatibility");CHECK(!strcmp(now.plugin->desc->version,"0.3.0"),"version");
-   const clap_plugin_params_t *params=now.plugin->get_extension(now.plugin,CLAP_EXT_PARAMS);CHECK(params && params->count(now.plugin)==8,"8 parameters");
-   for(unsigned k=0;k<8;k++){clap_param_info_t info;CHECK(params->get_info(now.plugin,k,&info),"param info");CHECK(info.id==k && (info.flags&CLAP_PARAM_IS_AUTOMATABLE) && (info.flags&CLAP_PARAM_IS_MODULATABLE),"parameter identity and automation");}
-   const double values[8]={80.25,16.5,0,127,-19,12,-12,64};set_all(old.plugin,values);
+   CHECK(!strcmp(old.plugin->desc->id,now.plugin->desc->id),"plugin ID compatibility");CHECK(!strcmp(now.plugin->desc->version,"0.4.0"),"version");
+   const clap_plugin_params_t *params=now.plugin->get_extension(now.plugin,CLAP_EXT_PARAMS);CHECK(params && params->count(now.plugin)==10,"10 parameters");
+   for(unsigned k=0;k<10;k++){clap_param_info_t info;CHECK(params->get_info(now.plugin,k,&info),"param info");CHECK(info.id==k && (info.flags&CLAP_PARAM_IS_AUTOMATABLE) && (info.flags&CLAP_PARAM_IS_MODULATABLE),"parameter identity and automation");}
+   const double values[8]={80.25,16.5,0,127,-19,12,-12,64};set_all(old.plugin,values,8);
    const clap_plugin_state_t *oldstate=old.plugin->get_extension(old.plugin,CLAP_EXT_STATE),*newstate=now.plugin->get_extension(now.plugin,CLAP_EXT_STATE);
    CHECK(oldstate && newstate,"state extension");Stream s={0};clap_ostream_t os={.ctx=&s,.write=stream_write};clap_istream_t is={.ctx=&s,.read=stream_read};
    CHECK(oldstate->save(old.plugin,&os) && s.size==72,"old state save");s.pos=0;CHECK(newstate->load(now.plugin,&is),"new state load");
    for(unsigned k=0;k<8;k++){double value;CHECK(params->get_value(now.plugin,k,&value) && value==values[k],"old state restored");}
+   {double f,g;CHECK(params->get_value(now.plugin,8,&f) && f==64 && params->get_value(now.plugin,9,&g) && g==0,"old state leaves EQF/EQG at defaults");}
+   {const double all[10]={1,2,3,4,5,6,7,8,9.5,-10.25};set_all(now.plugin,all,10);Stream t={0};clap_ostream_t o2={.ctx=&t,.write=stream_write};clap_istream_t i2={.ctx=&t,.read=stream_read};
+    CHECK(newstate->save(now.plugin,&o2) && t.size==88,"state save");set_all(now.plugin,values,8);t.pos=0;CHECK(newstate->load(now.plugin,&i2),"state load");
+    for(unsigned k=0;k<10;k++){double value;CHECK(params->get_value(now.plugin,k,&value) && value==all[k],"state round trip");}
+    double back[10];memcpy(back,values,sizeof values);back[8]=64;back[9]=0;set_all(now.plugin,back,10);}
    s.data[0]='?';s.pos=0;CHECK(!newstate->load(now.plugin,&is),"invalid state rejected");double v;CHECK(params->get_value(now.plugin,0,&v)&&v==values[0],"transactional state load");
    const clap_plugin_latency_t *latency=now.plugin->get_extension(now.plugin,CLAP_EXT_LATENCY);CHECK(latency,"latency extension");
    const clap_plugin_audio_ports_t *ports=now.plugin->get_extension(now.plugin,CLAP_EXT_AUDIO_PORTS);CHECK(ports && ports->count(now.plugin,true)==1 && ports->count(now.plugin,false)==1,"audio ports");
    const clap_plugin_remote_controls_t *remote=now.plugin->get_extension(now.plugin,CLAP_EXT_REMOTE_CONTROLS);clap_remote_controls_page_t page;
-   CHECK(remote && remote->get(now.plugin,0,&page),"remote page");for(unsigned k=0;k<8;k++)CHECK(page.param_ids[k]==k,"remote ids");
-   const double dry[8]={40,127,0,0,0,0,0,0};set_all(now.plugin,dry);
+   CHECK(remote && remote->count(now.plugin)==2 && remote->get(now.plugin,0,&page),"remote page");for(unsigned k=0;k<8;k++)CHECK(page.param_ids[k]==k,"remote ids");
+   CHECK(remote->get(now.plugin,1,&page) && page.param_ids[0]==8 && page.param_ids[1]==9 && page.param_ids[2]==CLAP_INVALID_ID,"EQ remote page");
+   const double dry[8]={40,127,0,0,0,0,0,0};set_all(now.plugin,dry,8);
    CHECK(now.plugin->activate(now.plugin,44100,1,256),"activate");CHECK(latency->get(now.plugin)==22 && latency_changed_count==1,"reported 22-sample latency");CHECK(now.plugin->start_processing(now.plugin),"start");
    float l[256]={0},r[256]={0},ol[256]={0},orr[256]={0};l[0]=0.25f;r[0]=-0.25f;
    float *ins[2]={l,r},*outs[2]={ol,orr};clap_audio_buffer_t ai={.data32=ins,.channel_count=2},ao={.data32=outs,.channel_count=2};

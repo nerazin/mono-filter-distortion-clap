@@ -11,13 +11,14 @@ def render(data, rate, chunk, prefix):
 with tempfile.TemporaryDirectory() as d:
     for rate in (44100,48000,96000):
         n=20000;t=np.arange(n,dtype=float);rng=np.random.default_rng(901)
-        x=np.zeros((n,10));x[:,:2]=rng.uniform(-.2,.2,(n,2))
+        x=np.zeros((n,12));x[:,:2]=rng.uniform(-.2,.2,(n,2))
         x[:,2]=63.5+63.5*np.sin(t*.0013)
         x[:,3]=63.5+63.5*np.sin(t*.0017+.4)
         x[:,4]=63.5+63.5*np.sin(t*.0011+1.0)
         x[:,5]=63.5+63.5*np.sin(t*.0009+2.0)
         x[:,6]=-.5+63.5*np.sin(t*.0019+.7)
         x[:,7]=6*np.sin(t*.0008);x[:,8]=0;x[:,9]=80+20*np.sin(t*.001)
+        x[:,10]=63.5+63.5*np.sin(t*.0014+.3);x[:,11]=-.5+63.5*np.sin(t*.0021+1.3)
         a=render(x,rate,17,d+'/a');b=render(x,rate,511,d+'/b')
         if not np.all(np.isfinite(a)) or np.max(np.abs(a))>8:
             raise AssertionError(f'Unstable output at {rate}')

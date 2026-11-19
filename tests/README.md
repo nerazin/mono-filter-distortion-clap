@@ -22,7 +22,7 @@ python3 tests/test_automation.py
 ```
 
 `clap_render` accepts a stream of headerless float64 frames with stereo input
-followed by eight parameters; see its source for arguments and output format.
+followed by the ten parameters in ID order; see its source for arguments and output format.
 
 `clap_contract.c` checks that plug-in and parameter IDs, saved state, ports
 and latency stay compatible. It loads an older build next to the current one:
