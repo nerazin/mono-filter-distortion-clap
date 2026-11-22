@@ -507,13 +507,16 @@ static void queue_push(FilterEngine *e, double l, double r) {
    e->queue[i].left = l;
    e->queue[i].right = r;
 }
+static double modulated(const AudioFrame *f, int id) {
+   return clamp(f->ctl[id] + f->mod[id], minimums[id], maximums[id]);
+}
 static void native_frame(FilterEngine *e, const AudioFrame *f) {
    if (e->pos == 0) {
       if (e->blocks % 3 == 0) control_frame(e, f);
       ++e->blocks;
    }
    /* Input, Output and Mix are not Monomachine controls: plain smoothing */
-   const double target[3] = {pow(10.0, f->ctl[INPUT] / 20.0), pow(10.0, f->ctl[OUTPUT] / 20.0), f->ctl[MIX] / 100.0};
+   const double target[3] = {pow(10.0, modulated(f, INPUT) / 20.0), pow(10.0, modulated(f, OUTPUT) / 20.0), modulated(f, MIX) / 100.0};
    double *const gain[3] = {&e->input_gain, &e->output_gain, &e->mix};
    for (int i = 0; i < 3; ++i) *gain[i] = e->settled ? *gain[i] + (target[i] - *gain[i]) * 0.01 : target[i];
    e->settled = true;

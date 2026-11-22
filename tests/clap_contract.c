@@ -30,6 +30,38 @@ static Loaded load(const char *path){
    const clap_plugin_descriptor_t *d=f->get_plugin_descriptor(f,0);CHECK(d,"descriptor");v.plugin=f->create_plugin(f,&host,d->id);CHECK(v.plugin && v.plugin->init(v.plugin),"init");return v;
 }
 static void close_plugin(Loaded *v){v->plugin->destroy(v->plugin);v->entry->deinit();dlclose(v->library);}
+#define MOD_FRAMES 4096
+static uint32_t one_size(const clap_input_events_t *p){(void)p;return 1;}
+static const clap_event_header_t *one_get(const clap_input_events_t *p,uint32_t i){(void)i;return p->ctx;}
+/* id >= 10 renders with no event at all */
+static void render_mod(const clap_plugin_t *p,double rate,clap_id id,double amount,double *out){
+   clap_event_param_mod_t m={.header={.size=sizeof m,.space_id=CLAP_CORE_EVENT_SPACE_ID,.type=CLAP_EVENT_PARAM_MOD},.param_id=id,.note_id=-1,.port_index=-1,.channel=-1,.key=-1,.amount=amount};
+   clap_input_events_t ev={.ctx=&m,.size=one_size,.get=one_get};
+   double in[2][MOD_FRAMES];for(int i=0;i<MOD_FRAMES;i++){in[0][i]=.05*sin(i*.031)+.03*sin(i*.37);in[1][i]=.04*sin(i*.047)+.03*sin(i*.29);}
+   double *ins[2]={in[0],in[1]},*outs[2]={out,out+MOD_FRAMES};clap_audio_buffer_t ai={.data64=ins,.channel_count=2},ao={.data64=outs,.channel_count=2};
+   clap_process_t pr={.steady_time=-1,.frames_count=MOD_FRAMES,.audio_inputs=&ai,.audio_outputs=&ao,.audio_inputs_count=1,.audio_outputs_count=1,.in_events=id<10?&ev:NULL};
+   CHECK(p->activate(p,rate,1,MOD_FRAMES)&&p->start_processing(p),"activate modulation render");CHECK(p->process(p,&pr)==CLAP_PROCESS_CONTINUE,"process modulation render");
+   p->stop_processing(p);p->deactivate(p);
+   if(id<10){m.amount=0;((const clap_plugin_params_t*)p->get_extension(p,CLAP_EXT_PARAMS))->flush(p,&ev,NULL);}
+}
+/* The parameter at `from` plus `amount` must sound exactly like the parameter at `to`; zero modulation must change nothing. */
+static void check_mod(const clap_plugin_t *p,double rate,double *v,unsigned id,double to,double from,double amount){
+   static double want[2*MOD_FRAMES],plain[2*MOD_FRAMES],got[2*MOD_FRAMES];const double home=v[id];double most=0;
+   v[id]=to;set_all(p,v,10);render_mod(p,rate,10,0,want);
+   v[id]=from;set_all(p,v,10);render_mod(p,rate,10,0,plain);
+   for(int i=0;i<2*MOD_FRAMES;i++)most=fmax(most,fabs(want[i]-plain[i]));CHECK(most>1e-4,"test values must sound different");
+   render_mod(p,rate,id,0,got);CHECK(!memcmp(got,plain,sizeof got),"zero modulation changes nothing");
+   render_mod(p,rate,id,amount,got);CHECK(!memcmp(got,want,sizeof got),"modulation reaches the parameter in plain units, clamped");
+   v[id]=home;set_all(p,v,10);
+}
+static void check_modulation(const clap_plugin_t *p){
+   static const double rates[3]={44100,48000,96000},lo[3]={-24,-24,0},hi[3]={24,24,100},mid[3]={0,0,50},to[3]={3,-3,40},by[3]={5,-7,30};
+   double v[10]={60,30,0,0,0,0,0,100,64,0};
+   for(unsigned r=0;r<3;r++)for(unsigned k=0;k<3;k++){
+      check_mod(p,rates[r],v,5+k,to[k],to[k]-by[k],by[k]);
+      check_mod(p,rates[r],v,5+k,lo[k],mid[k],-127);check_mod(p,rates[r],v,5+k,hi[k],mid[k],127);
+   }
+}
 int main(int argc,char **argv){
    CHECK(argc==3,"usage: clap_contract older.clap current.clap");Loaded old=load(argv[1]), now=load(argv[2]);
    CHECK(!strcmp(old.plugin->desc->id,now.plugin->desc->id),"plugin ID compatibility");CHECK(!strcmp(now.plugin->desc->version,"0.4.0"),"version");
@@ -61,5 +93,5 @@ int main(int argc,char **argv){
    CHECK(fabs(ol[22]-.25)<1e-6 && fabs(orr[22]+.25)<1e-6,"dry impulse alignment");
    now.plugin->stop_processing(now.plugin);now.plugin->deactivate(now.plugin);
    CHECK(now.plugin->activate(now.plugin,48000,1,256),"activate 48k");CHECK(latency->get(now.plugin)==114 && latency_changed_count==2,"updated 48k latency");
-   now.plugin->deactivate(now.plugin);close_plugin(&now);close_plugin(&old);puts("PASS CLAP IDs, older state, automation, ports and latency");
+   now.plugin->deactivate(now.plugin);check_modulation(now.plugin);close_plugin(&now);close_plugin(&old);puts("PASS CLAP IDs, older state, automation, ports, latency and Input/Output/Mix modulation");
 }
