@@ -12,7 +12,8 @@
  * 16 stereo frames at 44.1 kHz; controls are the 24-bit block words the
  * Monomachine's main CPU sends (knob value << 16). The controls are the
  * filter page's BASE, WIDTH, HP Q and LP Q, the AMP page's DIST and the EFX
- * page's EQF and EQG.
+ * page's EQF and EQG, plus the kit's key tracking, which moves the filter
+ * with the track's pitch (mc_pitch, mc_positions).
  *
  * Plain C99, no dependencies beyond libm. SPDX-License-Identifier: GPL-3.0-only */
 #ifndef MONO_CORE_H
@@ -347,24 +348,63 @@ static void mc_eq(int32_t eqf, int32_t eqg, int32_t eq[4]) {
    eq[3] = mc_eq_ap[g];
 }
 
-/* Process one block of 16 frames in place. ctl[] holds the seven block words
- * (0 .. 0x7fffff; a knob at v sends v << 16, DIST and EQG centre is 64 << 16). Audio
- * is 24-bit signed. The output is the track signal after the filter section,
- * inverted, about 7 dB below the input at DIST centre. */
-static void mono_core_block(MonoCore *m, const int32_t ctl[MC_CONTROLS], int32_t left[MC_FRAMES], int32_t right[MC_FRAMES]) {
-   McBlock k;
-   mc_eq(ctl[MC_EQF], ctl[MC_EQG], k.eq);
-   /* BASE places the high-pass, BASE + WIDTH the low-pass, 16 steps per unit */
+/* The kernel's pitch index (P:$262-$2d4) as it is on an FX track at PORT 0.
+ * TUNE is fixed at 64 there (+341.5); with no pitch modulation and the master
+ * tune at 440 Hz, words 30 and 38 add nothing. `word` is block word 41, the
+ * note's (note << 11) / 12. A new one is reached in two blocks: 127/128 of the
+ * way, then the rest. Reset to the note when the machine is assigned. */
+typedef struct { mc_acc now; int32_t start, target; } McPitch;
+
+static void mc_pitch_reset(McPitch *g, int32_t word) { g->now = mc_w(word); g->start = g->target = word; }
+
+static int32_t mc_pitch(McPitch *g, int32_t word) {
+   if (word != g->target) {   /* a glide still under way restarts from where it is */
+      const int32_t now = mc_hi(g->now);
+      if ((word < now && g->target >= now) || (word >= now && g->target < now)) g->start = g->target;
+      g->target = word;
+   }
+   const mc_acc dist = mc_w(g->target) - mc_w(g->start);
+   mc_acc a = g->now + mc_mpy(mc_sat(dist), 0x7f0000);   /* PORT 0's rate, whatever the tempo */
+   if (dist >= 0 ? a > mc_w(g->target) : a < mc_w(g->target)) { g->start = g->target; a = mc_w(g->target); }
+   g->now = mc_w(mc_hi(a)) | mc_lo(a);                   /* stored as 48 bits */
+   const mc_acc p = a + mc_mpy(0x2ab, 0x400000);
+   return p < 0 ? 0 : p >= mc_w(0x5800) ? 0x5800 : mc_hi(p);
+}
+
+/* Block word 37's key-tracking bits (KIT ASSIGN KEY: LPF and HPF). */
+#define MC_LP_KEY (1 << 9)
+#define MC_HP_KEY (1 << 11)
+
+/* The filter's two positions (P:$537-$56c) with the filter envelope at rest.
+ * BASE places the high-pass, BASE + WIDTH the low-pass, 16 steps per unit.
+ * Key tracking adds the pitch index / 16, 1:1 on the filter's axis of 128
+ * steps per octave, after the high-pass clamp. */
+static void mc_positions(const int32_t ctl[MC_CONTROLS], int32_t pitch, int32_t keys, int32_t *hp, int32_t *lp) {
    mc_acc a = mc_rnd(mc_mpy(0x800, ctl[MC_BASE]) - mc_w(0x80));
    if (a >= mc_w(0x700)) a = mc_w(0x700);
-   const int32_t hp_target = mc_hi(a);
+   const mc_acc key = mc_mpy(pitch, 0x080000);
+   *hp = mc_hi(keys & MC_HP_KEY ? a + key : a);
+   if (keys & MC_LP_KEY) a += key;
    a += mc_mpy(0x800, ctl[MC_WIDTH]);
    if (a < 0) a = 0;
-   const int32_t lp_target = mc_hi(a);
+   *lp = mc_hi(a);
+}
+
+/* Process one block of 16 frames in place. ctl[] holds the seven block words
+ * (0 .. 0x7fffff; a knob at v sends v << 16, DIST and EQG centre is 64 << 16),
+ * pitch the block's pitch index (mc_pitch) and keys word 37's MC_LP_KEY and
+ * MC_HP_KEY bits. Audio is 24-bit signed. The output is the track signal after
+ * the filter section, inverted, about 7 dB below the input at DIST centre. */
+static void mono_core_block(MonoCore *m, const int32_t ctl[MC_CONTROLS], int32_t pitch, int32_t keys,
+                            int32_t left[MC_FRAMES], int32_t right[MC_FRAMES]) {
+   McBlock k;
+   mc_eq(ctl[MC_EQF], ctl[MC_EQG], k.eq);
+   int32_t hp_target, lp_target;
+   mc_positions(ctl, pitch, keys, &hp_target, &lp_target);
 
    /* DIST below centre only turns the input down; above centre the input
     * gain stays at its maximum and the gain into the clipper rises. */
-   a = mc_shl(mc_w(ctl[MC_DIST]), 1);
+   mc_acc a = mc_shl(mc_w(ctl[MC_DIST]), 1);
    const int32_t drive = mc_drive[mc_sat(a) >> 15];
    a -= mc_w(0x800000);
    if (a < 0) a = 0;

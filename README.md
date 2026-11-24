@@ -1,9 +1,11 @@
-# Mono Filter Distortion 0.4.0
+# Mono Filter Distortion 0.5.0
 
 The Elektron Monomachine's track EQ, filter and distortion as a stereo CLAP
 effect for Bitwig: EQF and EQG, then BASE, WIDTH, HP Q, LP Q and DIST, in the
-hardware's order, working directly on incoming audio with no MIDI, key
-tracking or filter envelope.
+hardware's order, working on incoming audio. Since 0.5.0 it also has the
+kit's key tracking: notes sent to the plug-in move the high-pass and the
+low-pass with their pitch, as on a Monomachine FX track. There is no filter
+envelope.
 
 Since 0.3.0 the DSP is no longer a curve-fitted approximation. It is a native
 fixed-point port of the signal path in Monomachine OS 1.32B, written from the
@@ -42,12 +44,14 @@ requires no firmware, emulator, JUCE or further network downloads.
    copies in the scanned plug-in directories.
 5. Open Bitwig and rescan plug-ins under **Settings → Locations** if needed.
 
-Version 0.4.0 keeps the plug-in ID and the parameter IDs of 0.1.0–0.3.0 and
-adds EQF and EQG. It opens projects saved by any older version, with the EQ at
-its defaults, which is how 0.3.0 sounded; the latency is unchanged. A project
-saved by 0.4.0 does not open in an older version, so keep a backup of
-important projects before replacing one. 0.3.0 changed the sound and latency
-of 0.1.0 and 0.2.0. This is a separate effect from Mono Chorus.
+Version 0.5.0 keeps the plug-in ID and all parameter IDs of 0.1.0–0.4.0 and
+adds LP KEY, HP KEY and a note input. It opens projects saved by any older
+version with both switches **off**, so they sound as they did; a new instance
+has both on, as the hardware's kit does. The latency is unchanged. A project
+saved by 0.5.0 does not open in an older version, so keep a backup of
+important projects before replacing one. 0.4.0 added EQF and EQG; 0.3.0
+changed the sound and latency of 0.1.0 and 0.2.0. This is a separate effect
+from Mono Chorus.
 
 `build_macos.sh` was run on an Apple Silicon Mac and the resulting universal
 bundle was loaded and rendered by the offline test host. It has **not** been
@@ -78,9 +82,12 @@ press Return. It prints loader and signature details without sending data.
 | Input | −24 to +24 dB before the EQ, filter and distortion. Not a Monomachine control. |
 | Output | −24 to +24 dB after the wet/dry mix. Not a Monomachine control. |
 | Mix | 0–100%; dry to filtered/distorted. Not a Monomachine control. |
+| LP KEY | ON/OFF, on by default; the low-pass follows the note (KIT ASSIGN KEY: LPF). |
+| HP KEY | ON/OFF, on by default; the high-pass follows the note (KIT ASSIGN KEY: HPF). |
 
-All controls support CLAP automation and modulation. The two channels are
-processed independently with the same settings.
+All controls support CLAP automation, and all but the two switches support
+modulation. The two channels are processed independently with the same
+settings.
 
 The seven Monomachine controls behave as its knobs do. A whole number is a knob
 position; values in between are accepted and land between positions, as an LFO
@@ -113,6 +120,32 @@ project, it lands on the step shown. This is what Monomodule's model of the
 main CPU does. It was not checked on a real unit. At host rates other than 44.1 kHz even the dry
 path is band-limited by sample-rate conversion.
 
+## Notes and key tracking
+
+The plug-in has a note input (CLAP notes or MIDI). Notes set the track's
+pitch and nothing else: they trigger no envelope and make no sound. As on the
+hardware, the pitch stays at the last note after it is released. With one
+voice, the last note held wins, and releasing it returns to the previous note
+still held. Until a note arrives, and after a reset, the pitch is C4.
+
+With a switch on, its filter moves 1:1 with the pitch: an octave up in pitch
+is an octave up in cutoff, which is 8 BASE steps (a semitone is 2/3 of one).
+The offset is absolute, not relative to some reference note. At C4 it is 661
+positions of the filter's 128 per octave, 5.2 octaves, as much as 41 BASE
+steps. So with HP KEY on and no note played, BASE 0 puts the high-pass where
+BASE 41 would put it with the switch off, and the defaults cut bass that 0.4.0
+passed: −4 dB at 100 Hz, −10.5 dB at 65 Hz and −21 dB at 40 Hz, measured
+against HP KEY off. Turn HP KEY off, or play low notes, for the old open
+bottom end. With WIDTH 127 the low-pass
+stays fully open with or without LP KEY.
+
+The pitch is what the Monomachine computes for an FX track at its defaults:
+the note, plus the fixed +2 semitones an FX track's TUNE adds, with PORT at 0,
+so a new note is reached in two blocks (127/128 of the way in the first). A
+note change takes effect at the next 48-sample frame, as the main CPU sends
+it. PORT, master tune, pitch bend and the LFO pitch page, which also move the
+pitch on the hardware, are not controls here.
+
 For a resonant, distorted band on a snare, try:
 
 ```text
@@ -136,15 +169,16 @@ path's Nyquist are not preserved.
 
 The reference is Monomachine OS 1.32B's DSP code running in
 [Monomodule](https://github.com/shnolk/monomodule)'s emulated DSP56300, on a
-THRU track with key tracking off, the filter envelope at rest and the rest of
-the EFX page at its defaults. All figures are at 44.1 kHz.
+THRU track with the filter envelope at rest and the rest of the EFX page at
+its defaults. All figures are at 44.1 kHz.
 
 | Check | Result |
 | --- | --- |
-| Filter-section output, 200 random cases: noise, sines and impulses from full scale to −40 dB, all seven controls jumping every few blocks (whole steps and words in between) | 6,400,000 of 6,400,000 frames identical |
+| Filter-section output, 200 random cases: noise, sines and impulses from full scale to −40 dB, all seven controls jumping every few blocks (whole steps and words in between), key tracking in all four settings and switched now and then, the note word changing every 1–40 blocks (notes, and in half the cases also any 24-bit word) | 6,400,000 of 6,400,000 frames identical |
+| The high-pass and low-pass positions (X:$5d9, Y:$5da) in every block of those cases | 400,000 of 400,000 blocks identical |
 | The EQ's coefficients in every block of those cases | 400,000 of 400,000 blocks identical |
 | The ten coefficient tables generated by the plug-in against the firmware's | 10,653 of 10,653 entries identical |
-| The built plug-in against the firmware driven by Monomodule's own host model, 160 cases with all seven knobs moving at random times (so the knob slew is included) | 7,674,880 of 7,674,880 samples identical |
+| The built plug-in against the firmware driven by Monomodule's own host model, 160 cases with all seven knobs moving at random times (so the knob slew is included), notes pressed and released every 1–30 blocks and the switches flipped now and then | 7,674,880 of 7,674,880 samples identical |
 | The 77 impulse captures used to judge 0.1.0 and 0.2.0, at the filter section (0.3.0; the EQ at its defaults computes the same coefficients in 0.4.0) | identical in all 77 |
 | The same 77 at the track's final output, after the hardware's VOL, pan and LEVEL | within 3 LSB of 24 bits |
 
@@ -162,15 +196,22 @@ What this does and does not establish:
   and turned the right way up (the hardware's clipper inverts). On the
   hardware the rest of the track follows; with SRR and the delay send off that
   is a plain gain and two samples of delay.
-- Key tracking, the filter envelope, SRR and the delay of a Monomachine track
-  are not here; they are off.
+- The filter envelope, SRR and the delay of a Monomachine track are not here;
+  they are off. The pitch sources other than the note (PORT, master tune, pitch
+  bend, the LFO pitch page) are at their defaults.
+- The host-model comparison replaces the master-tune word Monomodule sends
+  (−1 at 440 Hz) with the main OS's 0. The note stack is the same one on both
+  sides of that comparison; how the main OS orders held notes was not traced.
+- The note input was tried only in the offline test host, **not** in Bitwig,
+  so how Bitwig routes notes to an audio effect was not checked.
 - Modulation follows the timing and range of the hardware's LFOs but was not
   checked against them.
 - At host rates other than 44.1 kHz the resampling around the core is this
   project's own and has no hardware counterpart.
 
 `tests/test_core.c` pins the verified behaviour without needing the firmware:
-it fails if the tables or the output for a fixed stimulus ever change. The
+it fails if the tables or the output for two fixed stimuli (one with key
+tracking and moving notes) ever change. The
 firmware comparison itself needs the OS file and a Monomodule build and is not
 part of this repository.
 

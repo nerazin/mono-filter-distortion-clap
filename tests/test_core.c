@@ -32,12 +32,38 @@ int main(void) {
          seed = seed * 1664525u + 1013904223u; l[i] = (int32_t)seed >> shift;
          seed = seed * 1664525u + 1013904223u; r[i] = (int32_t)seed >> shift;
       }
-      mono_core_block(&m, ctl, l, r);
+      mono_core_block(&m, ctl, 0, 0, l, r);
       mix(l, MC_FRAMES); mix(r, MC_FRAMES);
    }
-   const uint64_t want_tables = 0x6cb9437eaa4f9343ULL, want_audio = 0xc4fa4862dc063c05ULL;
-   printf("tables %016llx audio %016llx\n", (unsigned long long)tables, (unsigned long long)hash);
-   if (tables != want_tables || hash != want_audio) { puts("FAIL: output differs from the firmware-verified build"); return 1; }
-   puts("PASS core tables and audio match the firmware-verified build");
+   const uint64_t audio = hash;
+
+   /* key tracking: notes changing every 5 blocks, the switches through all four settings */
+   hash = 1469598103934665603ULL;
+   mono_core_reset(&m);
+   int32_t word = (60 << 11) / 12, kctl[MC_CONTROLS] = {0, 64 << 16, 0, 0, 64 << 16, 64 << 16, 64 << 16};
+   McPitch glide;
+   mc_pitch_reset(&glide, word);
+   for (int block = 0; block < 4000; ++block) {
+      int32_t l[MC_FRAMES], r[MC_FRAMES];
+      if (block % 7 == 6) {
+         seed = seed * 1664525u + 1013904223u;
+         kctl[(seed >> 8) % MC_CONTROLS] = (int32_t)(seed >> 9) % 0x7f0001;
+      }
+      if (block % 5 == 4) {
+         seed = seed * 1664525u + 1013904223u;
+         word = (int32_t)((seed >> 9) % 128 << 11) / 12;
+      }
+      const int32_t keys = (block / 250 & 1 ? MC_LP_KEY : 0) | (block / 500 & 1 ? MC_HP_KEY : 0);
+      for (int i = 0; i < MC_FRAMES; ++i) {
+         seed = seed * 1664525u + 1013904223u; l[i] = (int32_t)seed >> 10;
+         seed = seed * 1664525u + 1013904223u; r[i] = (int32_t)seed >> 10;
+      }
+      mono_core_block(&m, kctl, mc_pitch(&glide, word), keys, l, r);
+      mix(l, MC_FRAMES); mix(r, MC_FRAMES);
+   }
+   const uint64_t want_tables = 0x6cb9437eaa4f9343ULL, want_audio = 0xc4fa4862dc063c05ULL, want_keys = 0x392842be21a80112ULL;
+   printf("tables %016llx audio %016llx keys %016llx\n", (unsigned long long)tables, (unsigned long long)audio, (unsigned long long)hash);
+   if (tables != want_tables || audio != want_audio || hash != want_keys) { puts("FAIL: output differs from the firmware-verified build"); return 1; }
+   puts("PASS core tables, audio and key tracking match the firmware-verified build");
    return 0;
 }
